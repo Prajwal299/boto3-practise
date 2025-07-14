@@ -43,14 +43,14 @@ pipeline {
 
         stage('Install boto3') {
             steps {
-                sh 'pip install boto3'
+                bat 'pip install boto3'
             }
         }
 
         stage('Launch EC2 with Docker') {
             steps {
                 withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'AWS-Creds']]) {
-                    sh 'python3 ec2_creator.py'
+                    bat 'python3 ec2_creator.py'
                 }
             }
         }
