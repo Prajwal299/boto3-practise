@@ -37,51 +37,55 @@ ec2_client = session.client('ec2')
 # --- Helper function to execute commands remotely ---
 def execute_remote_command(ssh_client, command):
     print(f"--- Executing: {command} ---")
-    stdin, stdout, stderr = ssh_client.exec_command(command, get_pty=True)
+    channel = ssh_client.get_transport().open_session()
+    channel.get_pty()
+    channel.exec_command(command)
     
-    # Read and print the output in a way that handles all characters
-    # We read from the channel directly to get bytes and then decode to UTF-8
-    channel = stdout.channel
     while not channel.closed or channel.recv_ready() or channel.recv_stderr_ready():
         if channel.recv_ready():
-            # Decode the standard output using UTF-8
             print(channel.recv(1024).decode('utf-8', errors='ignore'), end='')
         if channel.recv_stderr_ready():
-             # Decode the standard error using UTF-8
             print(channel.recv_stderr(1024).decode('utf-8', errors='ignore'), end='')
-    
+
     exit_status = channel.recv_exit_status()
     if exit_status != 0:
-        print(f"\nERROR: Command exited with status {exit_status}")
-        raise Exception(f"A remote command failed with exit status {exit_status}.")
+        print(f"\nERROR: A remote command failed with exit status {exit_status}.")
+        raise Exception(f"Remote command execution failed.")
     print(f"\n--- Command successful ---")
-
 
 # --- Main Script Logic ---
 try:
-    # Step 1: Ensure Security Group rules exist
-    print(f"Checking Security Group '{SECURITY_GROUP_ID}' for required inbound rules...")
-    response = ec2_client.describe_security_groups(GroupIds=[SECURITY_GROUP_ID])
-    sg = response['SecurityGroups'][0]
-    ssh_rule_found = any(perm.get('FromPort') == 22 and '0.0.0.0/0' in [ip['CidrIp'] for ip in perm.get('IpPermissions', [])] for perm in sg.get('IpPermissions', []))
-    flask_rule_found = any(perm.get('FromPort') == 5000 and '0.0.0.0/0' in [ip['CidrIp'] for ip in perm.get('IpPermissions', [])] for perm in sg.get('IpPermissions', []))
-
-    if not ssh_rule_found:
-        print("SSH rule (port 22) not found. Adding it now...")
-        ec2_client.authorize_security_group_ingress(GroupId=SECURITY_GROUP_ID, IpPermissions=[{'IpProtocol': 'tcp', 'FromPort': 22, 'ToPort': 22, 'IpRanges': [{'CidrIp': '0.0.0.0/0'}]}])
-        print("Successfully added inbound rule for SSH.")
-    else:
-        print("Inbound rule for SSH (port 22) already exists.")
-
-    if not flask_rule_found:
-        print("Flask app rule (port 5000) not found. Adding it now...")
-        ec2_client.authorize_security_group_ingress(GroupId=SECURITY_GROUP_ID, IpPermissions=[{'IpProtocol': 'tcp', 'FromPort': 5000, 'ToPort': 5000, 'IpRanges': [{'CidrIp': '0.0.0.0/0'}]}])
-        print("Successfully added inbound rule for Flask app.")
-    else:
-        print("Inbound rule for Flask app (port 5000) already exists.")
+    # --- Step 1: Ensure Security Group rules exist ---
+    print(f"Ensuring inbound rules on Security Group '{SECURITY_GROUP_ID}'...")
     
-    # Step 2: Create or find Key Pair
-    print(f"Checking for key pair: {KEY_NAME}")
+    # Ensure SSH rule exists
+    try:
+        ec2_client.authorize_security_group_ingress(
+            GroupId=SECURITY_GROUP_ID,
+            IpPermissions=[{'IpProtocol': 'tcp', 'FromPort': 22, 'ToPort': 22, 'IpRanges': [{'CidrIp': '0.0.0.0/0'}]}]
+        )
+        print("Successfully added inbound rule for SSH (port 22).")
+    except ec2_client.exceptions.ClientError as e:
+        if 'InvalidPermission.Duplicate' in str(e):
+            print("Inbound rule for SSH (port 22) already exists. Continuing.")
+        else:
+            raise e # Re-raise any other unexpected error
+
+    # Ensure Flask App rule exists
+    try:
+        ec2_client.authorize_security_group_ingress(
+            GroupId=SECURITY_GROUP_ID,
+            IpPermissions=[{'IpProtocol': 'tcp', 'FromPort': 5000, 'ToPort': 5000, 'IpRanges': [{'CidrIp': '0.0.0.0/0'}]}]
+        )
+        print("Successfully added inbound rule for Flask App (port 5000).")
+    except ec2_client.exceptions.ClientError as e:
+        if 'InvalidPermission.Duplicate' in str(e):
+            print("Inbound rule for Flask App (port 5000) already exists. Continuing.")
+        else:
+            raise e
+
+    # --- Step 2: Create or find Key Pair ---
+    print(f"\nChecking for key pair: {KEY_NAME}")
     try:
         ec2_client.describe_key_pairs(KeyNames=[KEY_NAME])
         print(f"Key pair '{KEY_NAME}' already exists. Reusing it.")
@@ -95,13 +99,17 @@ try:
             print(f"Saved private key to '{KEY_FILE_PATH}'")
         else: raise e
 
-    # Step 3: Launch EC2 Instance
-    print("Launching a plain EC2 instance...")
-    response = ec2_client.run_instances(ImageId=AMI_ID, MinCount=1, MaxCount=1, InstanceType=INSTANCE_TYPE, KeyName=KEY_NAME, SecurityGroupIds=[SECURITY_GROUP_ID], TagSpecifications=[{'ResourceType': 'instance', 'Tags': [{'Key': 'Name', 'Value': 'Jenkins-Flask-Deploy-SSH'}]}])
+    # --- Step 3: Launch EC2 Instance ---
+    print("\nLaunching a plain EC2 instance...")
+    response = ec2_client.run_instances(
+        ImageId=AMI_ID, MinCount=1, MaxCount=1, InstanceType=INSTANCE_TYPE,
+        KeyName=KEY_NAME, SecurityGroupIds=[SECURITY_GROUP_ID],
+        TagSpecifications=[{'ResourceType': 'instance', 'Tags': [{'Key': 'Name', 'Value': 'Jenkins-Flask-Deploy-SSH'}]}]
+    )
     instance_id = response['Instances'][0]['InstanceId']
     print(f"Instance {instance_id} is launching...")
 
-    # Step 4: Wait for Instance and SSH
+    # --- Step 4: Wait for Instance and SSH ---
     ec2_resource = session.resource('ec2')
     instance = ec2_resource.Instance(instance_id)
     instance.wait_until_running()
@@ -113,8 +121,9 @@ try:
     retries = 10
     for i in range(retries):
         try:
-            with socket.create_connection((public_ip, 22), timeout=10):
+            with socket.create_connection((public_ip, 22), timeout=15):
                 print("SSH port 22 is open. Connection successful.")
+                time.sleep(5) # Add a small delay for the SSH daemon to be fully ready
                 break
         except (socket.timeout, ConnectionRefusedError, OSError):
             if i < retries - 1:
@@ -122,8 +131,8 @@ try:
                 time.sleep(15)
             else: raise Exception("Could not connect to SSH after multiple retries.")
     
-    # Step 5: Connect via SSH and run commands
-    print(f"Connecting to {public_ip} via SSH...")
+    # --- Step 5: Connect via SSH and run commands ---
+    print(f"\nConnecting to {public_ip} via SSH...")
     ssh_client = paramiko.SSHClient()
     ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     private_key = paramiko.RSAKey.from_private_key_file(KEY_FILE_PATH)
