@@ -16,7 +16,7 @@ instance = ec2_console.run_instances(
             'Tags': [
                 {
                     'Key': 'Name',
-                    'Value': 'Boto3-deployment'
+                    'Value': 'Boto3-deployment-1'
                 }
             ]
         }
