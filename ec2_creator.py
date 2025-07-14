@@ -17,7 +17,7 @@ KEY_NAME = 'jenkins-boto3-persistent-key'
 KEY_FILE_PATH = f'{KEY_NAME}.pem'
 GIT_REPO_URL = 'https://github.com/Prajwal299/boto3-practise.git'
 
-# --- REMOTE COMMANDS (MODIFIED FOR AUTOMATION & GRANULAR EXECUTION) ---
+# --- REMOTE COMMANDS (FIXED DOCKER BUILD PATH) ---
 REMOTE_COMMANDS = [
     "echo '--- Updating package lists ---'",
     "sudo DEBIAN_FRONTEND=noninteractive apt-get update -yq",
@@ -29,9 +29,11 @@ REMOTE_COMMANDS = [
     "echo '--- Adding ubuntu user to docker group ---'",
     "sudo usermod -aG docker ubuntu",
     "echo '--- Cloning application repository ---'",
-    f"git clone {GIT_REPO_URL} /home/ubuntu/boto3-practise",
+    # Clone the repo into /home/ubuntu/app
+    f"git clone {GIT_REPO_URL} /home/ubuntu/app",
     "echo '--- Building Docker image ---'",
-    "sudo docker build -t flask-app-3 /home/ubuntu/boto3-practise/flask-app-3",
+    # THE FIX: Point the docker build command to the correct sub-directory where the Dockerfile is located.
+    "sudo docker build -t flask-app-3 /home/ubuntu/app/flask-app-3",
     "echo '--- Running Docker container ---'",
     "sudo docker run -d -p 5000:5000 --name my-flask-container flask-app-3"
 ]
@@ -50,7 +52,6 @@ def execute_remote_command(ssh_client, command):
     
     while not channel.closed or channel.recv_ready() or channel.recv_stderr_ready():
         if channel.recv_ready():
-            # THE FIX: Write raw bytes directly to the buffer, bypassing Python's print() encoding.
             sys.stdout.buffer.write(channel.recv(1024))
             sys.stdout.flush()
         if channel.recv_stderr_ready():
@@ -96,7 +97,7 @@ try:
 
     # Step 3: Launch EC2 Instance
     print("\nLaunching a plain EC2 instance...")
-    response = ec2_client.run_instances(ImageId=AMI_ID, MinCount=1, MaxCount=1, InstanceType=INSTANCE_TYPE, KeyName=KEY_NAME, SecurityGroupIds=[SECURITY_GROUP_ID], TagSpecifications=[{'ResourceType': 'instance', 'Tags': [{'Key': 'Name', 'Value': 'Jenkins-Flask-Deploy-SSH-14'}]}])
+    response = ec2_client.run_instances(ImageId=AMI_ID, MinCount=1, MaxCount=1, InstanceType=INSTANCE_TYPE, KeyName=KEY_NAME, SecurityGroupIds=[SECURITY_GROUP_ID], TagSpecifications=[{'ResourceType': 'instance', 'Tags': [{'Key': 'Name', 'Value': 'Jenkins-Flask-Deploy-SSHhhhh'}]}])
     instance_id = response['Instances'][0]['InstanceId']
     print(f"Instance {instance_id} is launching...")
 
@@ -129,7 +130,6 @@ try:
     ssh_client.connect(hostname=public_ip, username='ubuntu', pkey=private_key)
     
     print("SSH connection established. Starting configuration...")
-    # Execute each command individually
     for command in REMOTE_COMMANDS:
         execute_remote_command(ssh_client, command)
     ssh_client.close()
