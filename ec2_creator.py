@@ -9,7 +9,7 @@ import socket
 
 # --- CONFIGURATION ---
 AWS_REGION = 'eu-north-1'
-AMI_ID = 'ami-042b4708b1d05f512'
+AMI_ID = 'ami-042b4708b1d05f512'  # This is an Ubuntu 24.04 'noble' AMI
 INSTANCE_TYPE = 't3.micro'
 SECURITY_GROUP_ID = 'sg-0cd0055363c2a2d75'
 
@@ -37,15 +37,25 @@ ec2_client = session.client('ec2')
 # --- Helper function to execute commands remotely ---
 def execute_remote_command(ssh_client, command):
     print(f"--- Executing: {command} ---")
+    # Open a new channel for this command execution
     channel = ssh_client.get_transport().open_session()
-    channel.get_pty()
+    # Request a pseudo-terminal, which helps with command compatibility
+    channel.get_pty() 
     channel.exec_command(command)
     
+    # Read output in a loop until the command is finished
+    # This loop handles both standard output and standard error streams
     while not channel.closed or channel.recv_ready() or channel.recv_stderr_ready():
+        # Check if there's standard output to read
         if channel.recv_ready():
-            print(channel.recv(1024).decode('utf-8', errors='ignore'), end='')
+            # Read bytes, decode to UTF-8, and print
+            output = channel.recv(1024).decode('utf-8', errors='ignore')
+            print(output, end='')
+        # Check if there's standard error to read
         if channel.recv_stderr_ready():
-            print(channel.recv_stderr(1024).decode('utf-8', errors='ignore'), end='')
+            # Read bytes, decode to UTF-8, and print
+            error_output = channel.recv_stderr(1024).decode('utf-8', errors='ignore')
+            print(error_output, end='')
 
     exit_status = channel.recv_exit_status()
     if exit_status != 0:
@@ -55,36 +65,24 @@ def execute_remote_command(ssh_client, command):
 
 # --- Main Script Logic ---
 try:
-    # --- Step 1: Ensure Security Group rules exist ---
+    # Step 1: Ensure Security Group rules exist
     print(f"Ensuring inbound rules on Security Group '{SECURITY_GROUP_ID}'...")
-    
-    # Ensure SSH rule exists
     try:
-        ec2_client.authorize_security_group_ingress(
-            GroupId=SECURITY_GROUP_ID,
-            IpPermissions=[{'IpProtocol': 'tcp', 'FromPort': 22, 'ToPort': 22, 'IpRanges': [{'CidrIp': '0.0.0.0/0'}]}]
-        )
+        ec2_client.authorize_security_group_ingress(GroupId=SECURITY_GROUP_ID, IpPermissions=[{'IpProtocol': 'tcp', 'FromPort': 22, 'ToPort': 22, 'IpRanges': [{'CidrIp': '0.0.0.0/0'}]}])
         print("Successfully added inbound rule for SSH (port 22).")
     except ec2_client.exceptions.ClientError as e:
         if 'InvalidPermission.Duplicate' in str(e):
             print("Inbound rule for SSH (port 22) already exists. Continuing.")
-        else:
-            raise e # Re-raise any other unexpected error
-
-    # Ensure Flask App rule exists
+        else: raise e
     try:
-        ec2_client.authorize_security_group_ingress(
-            GroupId=SECURITY_GROUP_ID,
-            IpPermissions=[{'IpProtocol': 'tcp', 'FromPort': 5000, 'ToPort': 5000, 'IpRanges': [{'CidrIp': '0.0.0.0/0'}]}]
-        )
+        ec2_client.authorize_security_group_ingress(GroupId=SECURITY_GROUP_ID, IpPermissions=[{'IpProtocol': 'tcp', 'FromPort': 5000, 'ToPort': 5000, 'IpRanges': [{'CidrIp': '0.0.0.0/0'}]}])
         print("Successfully added inbound rule for Flask App (port 5000).")
     except ec2_client.exceptions.ClientError as e:
         if 'InvalidPermission.Duplicate' in str(e):
             print("Inbound rule for Flask App (port 5000) already exists. Continuing.")
-        else:
-            raise e
+        else: raise e
 
-    # --- Step 2: Create or find Key Pair ---
+    # Step 2: Create or find Key Pair
     print(f"\nChecking for key pair: {KEY_NAME}")
     try:
         ec2_client.describe_key_pairs(KeyNames=[KEY_NAME])
@@ -99,17 +97,13 @@ try:
             print(f"Saved private key to '{KEY_FILE_PATH}'")
         else: raise e
 
-    # --- Step 3: Launch EC2 Instance ---
+    # Step 3: Launch EC2 Instance
     print("\nLaunching a plain EC2 instance...")
-    response = ec2_client.run_instances(
-        ImageId=AMI_ID, MinCount=1, MaxCount=1, InstanceType=INSTANCE_TYPE,
-        KeyName=KEY_NAME, SecurityGroupIds=[SECURITY_GROUP_ID],
-        TagSpecifications=[{'ResourceType': 'instance', 'Tags': [{'Key': 'Name', 'Value': 'Jenkins-Flask-Deploy-SSH'}]}]
-    )
+    response = ec2_client.run_instances(ImageId=AMI_ID, MinCount=1, MaxCount=1, InstanceType=INSTANCE_TYPE, KeyName=KEY_NAME, SecurityGroupIds=[SECURITY_GROUP_ID], TagSpecifications=[{'ResourceType': 'instance', 'Tags': [{'Key': 'Name', 'Value': 'Jenkins-Flask-Deploy-SSH'}]}])
     instance_id = response['Instances'][0]['InstanceId']
     print(f"Instance {instance_id} is launching...")
 
-    # --- Step 4: Wait for Instance and SSH ---
+    # Step 4: Wait for Instance and SSH
     ec2_resource = session.resource('ec2')
     instance = ec2_resource.Instance(instance_id)
     instance.wait_until_running()
@@ -123,7 +117,7 @@ try:
         try:
             with socket.create_connection((public_ip, 22), timeout=15):
                 print("SSH port 22 is open. Connection successful.")
-                time.sleep(5) # Add a small delay for the SSH daemon to be fully ready
+                time.sleep(5)
                 break
         except (socket.timeout, ConnectionRefusedError, OSError):
             if i < retries - 1:
@@ -131,7 +125,7 @@ try:
                 time.sleep(15)
             else: raise Exception("Could not connect to SSH after multiple retries.")
     
-    # --- Step 5: Connect via SSH and run commands ---
+    # Step 5: Connect via SSH and run commands
     print(f"\nConnecting to {public_ip} via SSH...")
     ssh_client = paramiko.SSHClient()
     ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
@@ -144,8 +138,8 @@ try:
     ssh_client.close()
     
     print("\n----------------------------------------------------")
-    print("Instance configuration complete!")
-    print(f"To SSH: ssh -i {KEY_FILE_PATH} ubuntu@{public_ip}")
+    print("SUCCESS: Instance configuration complete!")
+    print(f"To SSH into the instance: ssh -i {KEY_FILE_PATH} ubuntu@{public_ip}")
     print(f"--> Access your Flask app at: http://{public_ip}:5000")
     print("----------------------------------------------------\n")
 
