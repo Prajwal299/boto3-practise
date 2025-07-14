@@ -9,7 +9,7 @@ import socket
 
 # --- CONFIGURATION ---
 AWS_REGION = 'eu-north-1'
-AMI_ID = 'ami-042b4708b1d05f512'  # This is an Ubuntu 24.04 'noble' AMI
+AMI_ID = 'ami-042b4708b1d05f512'
 INSTANCE_TYPE = 't3.micro'
 SECURITY_GROUP_ID = 'sg-0cd0055363c2a2d75'
 
@@ -17,9 +17,12 @@ KEY_NAME = 'jenkins-boto3-persistent-key'
 KEY_FILE_PATH = f'{KEY_NAME}.pem'
 GIT_REPO_URL = 'https://github.com/Prajwal299/boto3-practise.git'
 
+# --- REMOTE COMMANDS (MODIFIED FOR AUTOMATION) ---
+# FIX: Use DEBIAN_FRONTEND=noninteractive to prevent interactive prompts and special characters
 REMOTE_COMMANDS = [
+    "export DEBIAN_FRONTEND=noninteractive",
     "sudo apt-get update -y",
-    "sudo apt-get install -y docker.io git",
+    "sudo apt-get install -yq docker.io git", # Added -q for quieter output
     "sudo systemctl start docker",
     "sudo systemctl enable docker",
     "sudo usermod -aG docker ubuntu",
@@ -37,25 +40,15 @@ ec2_client = session.client('ec2')
 # --- Helper function to execute commands remotely ---
 def execute_remote_command(ssh_client, command):
     print(f"--- Executing: {command} ---")
-    # Open a new channel for this command execution
     channel = ssh_client.get_transport().open_session()
-    # Request a pseudo-terminal, which helps with command compatibility
-    channel.get_pty() 
+    channel.get_pty()
     channel.exec_command(command)
     
-    # Read output in a loop until the command is finished
-    # This loop handles both standard output and standard error streams
     while not channel.closed or channel.recv_ready() or channel.recv_stderr_ready():
-        # Check if there's standard output to read
         if channel.recv_ready():
-            # Read bytes, decode to UTF-8, and print
-            output = channel.recv(1024).decode('utf-8', errors='ignore')
-            print(output, end='')
-        # Check if there's standard error to read
+            print(channel.recv(1024).decode('utf-8', errors='ignore'), end='')
         if channel.recv_stderr_ready():
-            # Read bytes, decode to UTF-8, and print
-            error_output = channel.recv_stderr(1024).decode('utf-8', errors='ignore')
-            print(error_output, end='')
+            print(channel.recv_stderr(1024).decode('utf-8', errors='ignore'), end='')
 
     exit_status = channel.recv_exit_status()
     if exit_status != 0:
@@ -71,15 +64,13 @@ try:
         ec2_client.authorize_security_group_ingress(GroupId=SECURITY_GROUP_ID, IpPermissions=[{'IpProtocol': 'tcp', 'FromPort': 22, 'ToPort': 22, 'IpRanges': [{'CidrIp': '0.0.0.0/0'}]}])
         print("Successfully added inbound rule for SSH (port 22).")
     except ec2_client.exceptions.ClientError as e:
-        if 'InvalidPermission.Duplicate' in str(e):
-            print("Inbound rule for SSH (port 22) already exists. Continuing.")
+        if 'InvalidPermission.Duplicate' in str(e): print("Inbound rule for SSH (port 22) already exists. Continuing.")
         else: raise e
     try:
         ec2_client.authorize_security_group_ingress(GroupId=SECURITY_GROUP_ID, IpPermissions=[{'IpProtocol': 'tcp', 'FromPort': 5000, 'ToPort': 5000, 'IpRanges': [{'CidrIp': '0.0.0.0/0'}]}])
         print("Successfully added inbound rule for Flask App (port 5000).")
     except ec2_client.exceptions.ClientError as e:
-        if 'InvalidPermission.Duplicate' in str(e):
-            print("Inbound rule for Flask App (port 5000) already exists. Continuing.")
+        if 'InvalidPermission.Duplicate' in str(e): print("Inbound rule for Flask App (port 5000) already exists. Continuing.")
         else: raise e
 
     # Step 2: Create or find Key Pair
@@ -91,15 +82,14 @@ try:
         if "InvalidKeyPair.NotFound" in str(e):
             print(f"Key pair not found. Creating a new one...")
             key_pair = ec2_client.create_key_pair(KeyName=KEY_NAME)
-            with open(KEY_FILE_PATH, 'w') as key_file:
-                key_file.write(key_pair['KeyMaterial'])
+            with open(KEY_FILE_PATH, 'w') as key_file: key_file.write(key_pair['KeyMaterial'])
             if os.name == 'posix': os.chmod(KEY_FILE_PATH, 0o400)
             print(f"Saved private key to '{KEY_FILE_PATH}'")
         else: raise e
 
     # Step 3: Launch EC2 Instance
     print("\nLaunching a plain EC2 instance...")
-    response = ec2_client.run_instances(ImageId=AMI_ID, MinCount=1, MaxCount=1, InstanceType=INSTANCE_TYPE, KeyName=KEY_NAME, SecurityGroupIds=[SECURITY_GROUP_ID], TagSpecifications=[{'ResourceType': 'instance', 'Tags': [{'Key': 'Name', 'Value': 'Jenkins-Flask-Deploy-SSH'}]}])
+    response = ec2_client.run_instances(ImageId=AMI_ID, MinCount=1, MaxCount=1, InstanceType=INSTANCE_TYPE, KeyName=KEY_NAME, SecurityGroupIds=[SECURITY_GROUP_ID], TagSpecifications=[{'ResourceType': 'instance', 'Tags': [{'Key': 'Name', 'Value': 'Jenkins-Flask-Deploy-SSH-12'}]}])
     instance_id = response['Instances'][0]['InstanceId']
     print(f"Instance {instance_id} is launching...")
 
