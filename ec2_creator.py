@@ -89,7 +89,7 @@ try:
 
     # Step 3: Launch EC2 Instance
     print("\nLaunching a plain EC2 instance...")
-    response = ec2_client.run_instances(ImageId=AMI_ID, MinCount=1, MaxCount=1, InstanceType=INSTANCE_TYPE, KeyName=KEY_NAME, SecurityGroupIds=[SECURITY_GROUP_ID], TagSpecifications=[{'ResourceType': 'instance', 'Tags': [{'Key': 'Name', 'Value': 'Jenkins-Flask-Deploy-SSH-12'}]}])
+    response = ec2_client.run_instances(ImageId=AMI_ID, MinCount=1, MaxCount=1, InstanceType=INSTANCE_TYPE, KeyName=KEY_NAME, SecurityGroupIds=[SECURITY_GROUP_ID], TagSpecifications=[{'ResourceType': 'instance', 'Tags': [{'Key': 'Name', 'Value': 'Jenkins-Flask-Deploy-SSH-13'}]}])
     instance_id = response['Instances'][0]['InstanceId']
     print(f"Instance {instance_id} is launching...")
 
