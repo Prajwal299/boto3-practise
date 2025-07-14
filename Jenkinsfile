@@ -17,10 +17,7 @@ pipeline {
         stage('Provision and Configure EC2 Instance') {
             steps {
                 withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'AWS-Creds']]) {
-                    // THE DEFINITIVE FIX:
-                    // 1. Change the Windows console to UTF-8 mode (chcp 65001)
-                    // 2. Then run the python script.
-                    // The '&&' ensures the code page is set first.
+                    // Force the Windows console into UTF-8 mode before running the Python script.
                     bat 'chcp 65001 && python ec2_creator.py'
                 } 
             }

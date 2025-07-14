@@ -17,18 +17,22 @@ KEY_NAME = 'jenkins-boto3-persistent-key'
 KEY_FILE_PATH = f'{KEY_NAME}.pem'
 GIT_REPO_URL = 'https://github.com/Prajwal299/boto3-practise.git'
 
-# --- REMOTE COMMANDS (MODIFIED FOR AUTOMATION) ---
-# FIX: Use DEBIAN_FRONTEND=noninteractive to prevent interactive prompts and special characters
+# --- REMOTE COMMANDS (MODIFIED FOR AUTOMATION & GRANULAR EXECUTION) ---
 REMOTE_COMMANDS = [
-    "export DEBIAN_FRONTEND=noninteractive",
-    "sudo apt-get update -y",
-    "sudo apt-get install -yq docker.io git", # Added -q for quieter output
+    "echo '--- Updating package lists ---'",
+    "sudo DEBIAN_FRONTEND=noninteractive apt-get update -yq",
+    "echo '--- Installing Docker and Git ---'",
+    "sudo DEBIAN_FRONTEND=noninteractive apt-get install -yq docker.io git",
+    "echo '--- Starting and enabling Docker ---'",
     "sudo systemctl start docker",
     "sudo systemctl enable docker",
+    "echo '--- Adding ubuntu user to docker group ---'",
     "sudo usermod -aG docker ubuntu",
+    "echo '--- Cloning application repository ---'",
     f"git clone {GIT_REPO_URL} /home/ubuntu/boto3-practise",
-    "cd /home/ubuntu/boto3-practise/flask-app-3",
-    "sudo docker build -t flask-app-3 .",
+    "echo '--- Building Docker image ---'",
+    "sudo docker build -t flask-app-3 /home/ubuntu/boto3-practise/flask-app-3",
+    "echo '--- Running Docker container ---'",
     "sudo docker run -d -p 5000:5000 --name my-flask-container flask-app-3"
 ]
 
@@ -39,22 +43,25 @@ ec2_client = session.client('ec2')
 
 # --- Helper function to execute commands remotely ---
 def execute_remote_command(ssh_client, command):
-    print(f"--- Executing: {command} ---")
+    print(f"\n>>> EXECUTING: {command}")
     channel = ssh_client.get_transport().open_session()
     channel.get_pty()
     channel.exec_command(command)
     
     while not channel.closed or channel.recv_ready() or channel.recv_stderr_ready():
         if channel.recv_ready():
-            print(channel.recv(1024).decode('utf-8', errors='ignore'), end='')
+            # THE FIX: Write raw bytes directly to the buffer, bypassing Python's print() encoding.
+            sys.stdout.buffer.write(channel.recv(1024))
+            sys.stdout.flush()
         if channel.recv_stderr_ready():
-            print(channel.recv_stderr(1024).decode('utf-8', errors='ignore'), end='')
+            sys.stderr.buffer.write(channel.recv_stderr(1024))
+            sys.stderr.flush()
 
     exit_status = channel.recv_exit_status()
     if exit_status != 0:
-        print(f"\nERROR: A remote command failed with exit status {exit_status}.")
+        print(f"\nERROR: Command failed with exit status {exit_status}.")
         raise Exception(f"Remote command execution failed.")
-    print(f"\n--- Command successful ---")
+    print(f"\n>>> SUCCESS: Command finished.")
 
 # --- Main Script Logic ---
 try:
@@ -64,20 +71,20 @@ try:
         ec2_client.authorize_security_group_ingress(GroupId=SECURITY_GROUP_ID, IpPermissions=[{'IpProtocol': 'tcp', 'FromPort': 22, 'ToPort': 22, 'IpRanges': [{'CidrIp': '0.0.0.0/0'}]}])
         print("Successfully added inbound rule for SSH (port 22).")
     except ec2_client.exceptions.ClientError as e:
-        if 'InvalidPermission.Duplicate' in str(e): print("Inbound rule for SSH (port 22) already exists. Continuing.")
+        if 'InvalidPermission.Duplicate' in str(e): print("Inbound rule for SSH (port 22) already exists.")
         else: raise e
     try:
         ec2_client.authorize_security_group_ingress(GroupId=SECURITY_GROUP_ID, IpPermissions=[{'IpProtocol': 'tcp', 'FromPort': 5000, 'ToPort': 5000, 'IpRanges': [{'CidrIp': '0.0.0.0/0'}]}])
         print("Successfully added inbound rule for Flask App (port 5000).")
     except ec2_client.exceptions.ClientError as e:
-        if 'InvalidPermission.Duplicate' in str(e): print("Inbound rule for Flask App (port 5000) already exists. Continuing.")
+        if 'InvalidPermission.Duplicate' in str(e): print("Inbound rule for Flask App (port 5000) already exists.")
         else: raise e
 
     # Step 2: Create or find Key Pair
     print(f"\nChecking for key pair: {KEY_NAME}")
     try:
         ec2_client.describe_key_pairs(KeyNames=[KEY_NAME])
-        print(f"Key pair '{KEY_NAME}' already exists. Reusing it.")
+        print(f"Key pair '{KEY_NAME}' already exists.")
     except ec2_client.exceptions.ClientError as e:
         if "InvalidKeyPair.NotFound" in str(e):
             print(f"Key pair not found. Creating a new one...")
@@ -89,7 +96,7 @@ try:
 
     # Step 3: Launch EC2 Instance
     print("\nLaunching a plain EC2 instance...")
-    response = ec2_client.run_instances(ImageId=AMI_ID, MinCount=1, MaxCount=1, InstanceType=INSTANCE_TYPE, KeyName=KEY_NAME, SecurityGroupIds=[SECURITY_GROUP_ID], TagSpecifications=[{'ResourceType': 'instance', 'Tags': [{'Key': 'Name', 'Value': 'Jenkins-Flask-Deploy-SSH-13'}]}])
+    response = ec2_client.run_instances(ImageId=AMI_ID, MinCount=1, MaxCount=1, InstanceType=INSTANCE_TYPE, KeyName=KEY_NAME, SecurityGroupIds=[SECURITY_GROUP_ID], TagSpecifications=[{'ResourceType': 'instance', 'Tags': [{'Key': 'Name', 'Value': 'Jenkins-Flask-Deploy-SSH-14'}]}])
     instance_id = response['Instances'][0]['InstanceId']
     print(f"Instance {instance_id} is launching...")
 
@@ -102,16 +109,15 @@ try:
     print(f"Instance is running at Public IP: {public_ip}")
 
     print("Waiting for SSH service to be available...")
-    retries = 10
-    for i in range(retries):
+    for i in range(12):
         try:
-            with socket.create_connection((public_ip, 22), timeout=15):
+            with socket.create_connection((public_ip, 22), timeout=10):
                 print("SSH port 22 is open. Connection successful.")
                 time.sleep(5)
                 break
         except (socket.timeout, ConnectionRefusedError, OSError):
-            if i < retries - 1:
-                print(f"SSH not ready yet. Retrying in 15 seconds... ({i+1}/{retries})")
+            if i < 11:
+                print(f"SSH not ready yet. Retrying in 15 seconds... ({i+1}/12)")
                 time.sleep(15)
             else: raise Exception("Could not connect to SSH after multiple retries.")
     
@@ -123,8 +129,9 @@ try:
     ssh_client.connect(hostname=public_ip, username='ubuntu', pkey=private_key)
     
     print("SSH connection established. Starting configuration...")
-    full_command_string = " && ".join(REMOTE_COMMANDS)
-    execute_remote_command(ssh_client, full_command_string)
+    # Execute each command individually
+    for command in REMOTE_COMMANDS:
+        execute_remote_command(ssh_client, command)
     ssh_client.close()
     
     print("\n----------------------------------------------------")
