@@ -11,14 +11,12 @@ import socket
 AWS_REGION = 'eu-north-1'
 AMI_ID = 'ami-042b4708b1d05f512'
 INSTANCE_TYPE = 't3.micro'
-# This is the Security Group we will check and modify if needed.
 SECURITY_GROUP_ID = 'sg-0cd0055363c2a2d75'
 
 KEY_NAME = 'jenkins-boto3-persistent-key'
 KEY_FILE_PATH = f'{KEY_NAME}.pem'
 GIT_REPO_URL = 'https://github.com/Prajwal299/boto3-practise.git'
 
-# --- List of commands to be executed remotely ---
 REMOTE_COMMANDS = [
     "sudo apt-get update -y",
     "sudo apt-get install -y docker.io git",
@@ -40,64 +38,49 @@ ec2_client = session.client('ec2')
 def execute_remote_command(ssh_client, command):
     print(f"--- Executing: {command} ---")
     stdin, stdout, stderr = ssh_client.exec_command(command, get_pty=True)
-    for line in iter(stdout.readline, ""):
-        print(line, end="")
-    exit_status = stdout.channel.recv_exit_status()
+    
+    # Read and print the output in a way that handles all characters
+    # We read from the channel directly to get bytes and then decode to UTF-8
+    channel = stdout.channel
+    while not channel.closed or channel.recv_ready() or channel.recv_stderr_ready():
+        if channel.recv_ready():
+            # Decode the standard output using UTF-8
+            print(channel.recv(1024).decode('utf-8', errors='ignore'), end='')
+        if channel.recv_stderr_ready():
+             # Decode the standard error using UTF-8
+            print(channel.recv_stderr(1024).decode('utf-8', errors='ignore'), end='')
+    
+    exit_status = channel.recv_exit_status()
     if exit_status != 0:
-        print(f"ERROR: Command failed with exit status {exit_status}")
-        for line in iter(stderr.readline, ""):
-            print(f"[STDERR] {line}", end="")
-        raise Exception(f"Command '{command}' failed.")
-    print(f"--- Command successful ---")
+        print(f"\nERROR: Command exited with status {exit_status}")
+        raise Exception(f"A remote command failed with exit status {exit_status}.")
+    print(f"\n--- Command successful ---")
+
 
 # --- Main Script Logic ---
 try:
-    # --- NEW: Step 1 - Ensure Security Group rules exist ---
+    # Step 1: Ensure Security Group rules exist
     print(f"Checking Security Group '{SECURITY_GROUP_ID}' for required inbound rules...")
-    try:
-        response = ec2_client.describe_security_groups(GroupIds=[SECURITY_GROUP_ID])
-        sg = response['SecurityGroups'][0]
-        
-        # Check for SSH rule
-        ssh_rule_found = any(
-            perm.get('FromPort') == 22 and '0.0.0.0/0' in [ip['CidrIp'] for ip in perm.get('IpRanges', [])]
-            for perm in sg.get('IpPermissions', [])
-        )
-        # Check for Flask App rule
-        flask_rule_found = any(
-            perm.get('FromPort') == 5000 and '0.0.0.0/0' in [ip['CidrIp'] for ip in perm.get('IpRanges', [])]
-            for perm in sg.get('IpPermissions', [])
-        )
+    response = ec2_client.describe_security_groups(GroupIds=[SECURITY_GROUP_ID])
+    sg = response['SecurityGroups'][0]
+    ssh_rule_found = any(perm.get('FromPort') == 22 and '0.0.0.0/0' in [ip['CidrIp'] for ip in perm.get('IpPermissions', [])] for perm in sg.get('IpPermissions', []))
+    flask_rule_found = any(perm.get('FromPort') == 5000 and '0.0.0.0/0' in [ip['CidrIp'] for ip in perm.get('IpPermissions', [])] for perm in sg.get('IpPermissions', []))
 
-        if not ssh_rule_found:
-            print("SSH rule (port 22) not found. Adding it now...")
-            ec2_client.authorize_security_group_ingress(
-                GroupId=SECURITY_GROUP_ID,
-                IpPermissions=[{'IpProtocol': 'tcp', 'FromPort': 22, 'ToPort': 22, 'IpRanges': [{'CidrIp': '0.0.0.0/0'}]}]
-            )
-            print("Successfully added inbound rule for SSH.")
-        else:
-            print("Inbound rule for SSH (port 22) already exists.")
+    if not ssh_rule_found:
+        print("SSH rule (port 22) not found. Adding it now...")
+        ec2_client.authorize_security_group_ingress(GroupId=SECURITY_GROUP_ID, IpPermissions=[{'IpProtocol': 'tcp', 'FromPort': 22, 'ToPort': 22, 'IpRanges': [{'CidrIp': '0.0.0.0/0'}]}])
+        print("Successfully added inbound rule for SSH.")
+    else:
+        print("Inbound rule for SSH (port 22) already exists.")
 
-        if not flask_rule_found:
-            print("Flask app rule (port 5000) not found. Adding it now...")
-            ec2_client.authorize_security_group_ingress(
-                GroupId=SECURITY_GROUP_ID,
-                IpPermissions=[{'IpProtocol': 'tcp', 'FromPort': 5000, 'ToPort': 5000, 'IpRanges': [{'CidrIp': '0.0.0.0/0'}]}]
-            )
-            print("Successfully added inbound rule for Flask app.")
-        else:
-            print("Inbound rule for Flask app (port 5000) already exists.")
-
-    except ec2_client.exceptions.ClientError as e:
-        if 'InvalidPermission.Duplicate' in str(e):
-             # This can happen in a race condition, it's safe to ignore.
-            print("A rule already existed, which is fine. Continuing.")
-        else:
-            print(f"Error checking/updating Security Group: {e}")
-            raise e
-
-    # --- Step 2: Create or find Key Pair ---
+    if not flask_rule_found:
+        print("Flask app rule (port 5000) not found. Adding it now...")
+        ec2_client.authorize_security_group_ingress(GroupId=SECURITY_GROUP_ID, IpPermissions=[{'IpProtocol': 'tcp', 'FromPort': 5000, 'ToPort': 5000, 'IpRanges': [{'CidrIp': '0.0.0.0/0'}]}])
+        print("Successfully added inbound rule for Flask app.")
+    else:
+        print("Inbound rule for Flask app (port 5000) already exists.")
+    
+    # Step 2: Create or find Key Pair
     print(f"Checking for key pair: {KEY_NAME}")
     try:
         ec2_client.describe_key_pairs(KeyNames=[KEY_NAME])
@@ -112,17 +95,13 @@ try:
             print(f"Saved private key to '{KEY_FILE_PATH}'")
         else: raise e
 
-    # --- Step 3: Launch EC2 Instance ---
+    # Step 3: Launch EC2 Instance
     print("Launching a plain EC2 instance...")
-    response = ec2_client.run_instances(
-        ImageId=AMI_ID, MinCount=1, MaxCount=1, InstanceType=INSTANCE_TYPE,
-        KeyName=KEY_NAME, SecurityGroupIds=[SECURITY_GROUP_ID],
-        TagSpecifications=[{'ResourceType': 'instance', 'Tags': [{'Key': 'Name', 'Value': 'Jenkins-Flask-Deploy-SSH'}]}]
-    )
+    response = ec2_client.run_instances(ImageId=AMI_ID, MinCount=1, MaxCount=1, InstanceType=INSTANCE_TYPE, KeyName=KEY_NAME, SecurityGroupIds=[SECURITY_GROUP_ID], TagSpecifications=[{'ResourceType': 'instance', 'Tags': [{'Key': 'Name', 'Value': 'Jenkins-Flask-Deploy-SSH'}]}])
     instance_id = response['Instances'][0]['InstanceId']
     print(f"Instance {instance_id} is launching...")
 
-    # --- Step 4: Wait for Instance and SSH to be ready ---
+    # Step 4: Wait for Instance and SSH
     ec2_resource = session.resource('ec2')
     instance = ec2_resource.Instance(instance_id)
     instance.wait_until_running()
@@ -141,10 +120,9 @@ try:
             if i < retries - 1:
                 print(f"SSH not ready yet. Retrying in 15 seconds... ({i+1}/{retries})")
                 time.sleep(15)
-            else:
-                raise Exception("Could not connect to SSH after multiple retries.")
+            else: raise Exception("Could not connect to SSH after multiple retries.")
     
-    # --- Step 5: Connect via SSH and run commands ---
+    # Step 5: Connect via SSH and run commands
     print(f"Connecting to {public_ip} via SSH...")
     ssh_client = paramiko.SSHClient()
     ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
